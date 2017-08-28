@@ -20,11 +20,14 @@
   },
   "homepage": "https://github.com/jayrbolton/browserify-crawl#readme",
   "dependencies": {
+    "acorn": "^5.1.1",
     "browserify": "13.3.0",
     "chalk": "1.1.3",
     "errorify": "0.3.1",
     "exorcist": "0.4.0",
+    "mkdirp": "^0.5.1",
     "ramda": "0.23.0",
+    "recursive-readdir-synchronous": "0.0.3",
     "uglify-js": "2.8.13",
     "watchify": "3.8.0"
   },

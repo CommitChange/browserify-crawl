@@ -7,6 +7,9 @@ const chalk = require('chalk')
 const watchify = require('watchify')
 const errorify = require('errorify')
 const Uglify = require('uglify-js')
+const path = require('path')
+const mkdirp = require('mkdirp')
+const recursive = require('recursive-readdir-synchronous');
 
 var log = R.identity
 
@@ -25,36 +28,32 @@ const init = (opts, browserifyOpts) => {
 // Recursively walk through a directory, finding all index css files or assets
 // Uses a stack, not actual recursion
 const walkDir = (opts, browserifyOpts) => {
-  const inputRegex = new RegExp("^" + opts.input.replace('/', '\/'))
-  var stack = [opts.input]
   var result = {indexFiles: [], directories: []}
   // Tree traversal of directory structure using stack recursion
-  while(stack.length) {
-    var input = stack.pop()
-    const stats = fs.lstatSync(input)
-    const filepath = R.replace(inputRegex, '', input)
-    if(stats.isDirectory()) {
-      // Push all children in the directory to the stack
-      const children = R.map(R.concat(input + '/'), fs.readdirSync(input))
-      stack.push.apply(stack, children)
-      result.directories.push(input)
-    } else if(stats.isFile()) {
-      if(input.match(new RegExp('\/' + opts.indexName + '$'))) {
-        log(chalk.gray('<>  found ' + input))
-        createDirs(opts.output + filepath)
-        result.indexFiles.push(input)
-        compile(input, filepath, opts, browserifyOpts)
-      }
-    }
-  }
+
+  var full_input_dir = path.resolve(opts.input)
+  var full_output_dir = path.resolve(opts.output)
+  var files = recursive(full_input_dir)
+  //we have files to create
+  result.indexFiles = files.filter(function(value) {
+    return path.basename(value) === opts.indexName && fs.statSync(value).isFile()
+  })
+
+  result.indexFiles.forEach(function(f){
+    var relative_from_input = path.relative(full_input_dir, f)
+    var full_output_path = path.join(full_output_dir, relative_from_input)
+    createDirsForOutputFile(path.dirname(full_output_path))
+    compile(f, full_output_path, opts, browserifyOpts)
+  })
+
   if(!result.indexFiles.length) {
     log(chalk.red('!!  no files in', opts.input, 'with main file ', opts.indexName))
   }
   return result
 }
 
-const compile = (input, filepath, opts, browserifyOpts) => {
-  browserifyOpts.entries = [input]
+const compile = (fullInputPath, fullOutputPath, opts, browserifyOpts) => {
+  browserifyOpts.entries = [fullInputPath]
   browserifyOpts = R.merge({
     cache: {}
   , packageCache: {}
@@ -65,55 +64,55 @@ const compile = (input, filepath, opts, browserifyOpts) => {
   if(opts.watch) plugins.push(watchify)
   browserifyOpts.plugin = browserifyOpts.plugin.concat(plugins)
   const b = browserify(browserifyOpts)
-  bundle(filepath, opts, b)
+  bundle(fullInputPath, fullOutputPath, opts, b)
   b.on('update', () => bundle(filepath, opts, b))
 }
 
-const bundle = (filepath, opts, b) => {
-  const bundleStream = fs.createWriteStream(opts.output + filepath)
-  const sourceMapUrl = (opts.sourceMapUrl || opts.output) + filepath + '.map'
+const bundle = (fullInputPath, fullOutputPath, opts, b) => {
+  const bundleStream = fs.createWriteStream(fullOutputPath)
+  //const sourceMapUrl = path.combine((opts.sourceMapUrl || opts.output), filepath + '.map')
+  const filename = path.basename(fullOutputPath)
+  const sourceMapUrl = filename + '.map'
   b.bundle()
-    .pipe(exorcist(opts.output + filepath + '.map', sourceMapUrl))
+    .pipe(exorcist(fullOutputPath + '.map'))
     .pipe(bundleStream)
-  bundleStream.on('finish', postCompile(filepath, sourceMapUrl, opts))
+  bundleStream.on('finish', postCompile(fullOutputPath, sourceMapUrl, opts))
 }
 
 // Optionally uglify the compiled output, and generate a source map file
-const postCompile = (filepath, sourceMapUrl, opts) => () => {
-  const fullPath = opts.output + filepath
+const postCompile = (fullOutputPath, sourceMapUrl, opts) => () => {
+  
   if(opts.uglify) {
-    log(chalk.blue('<>  uglifying ' + opts.output + filepath))
-    const mapPath = fullPath + '.map'
-    fs.renameSync(fullPath, fullPath + '.bundle')
-    var result = Uglify.minify(fullPath + '.bundle', {
+    log(chalk.blue('<>  uglifying ' + fullOutputPath))
+    const mapPath = fullOutputPath + '.map'
+    fs.renameSync(fullOutputPath, fullOutputPath + '.bundle')
+    var result = Uglify.minify(fullOutputPath + '.bundle', {
       inSourceMap: mapPath
     , outSourceMap: mapPath
     , sourceMapUrl: sourceMapUrl
     })
-    fs.writeFile(fullPath, result.code, R.identity)
-    fs.unlink(fullPath + '.bundle', R.identity)
+    fs.writeFileSync(fullOutputPath, result.code, R.identity)
+    fs.unlinkSync(fullOutputPath + '.bundle', R.identity)
   }
   if(opts.gzip) {
-    // gzip it!
-    const gzip = zlib.createGzip()
-    log(chalk.blue('<>  gzipping ' + fullPath + '.gz'))
-    fs.createReadStream(fullPath)
-      .pipe(gzip)
-      .pipe(fs.createWriteStream(fullPath + '.gz'))
+    
+    log(chalk.blue('<>  gzipping ' + fullOutputPath + '.gz'))
+   
+    fs.writeFileSync(fullOutputPath+ '.gz',zlib.gzipSync( fs.readFileSync(fullOutputPath)))
   }
-  log(chalk.green.bold('=>  compiled ' + fullPath))
+  log(chalk.green.bold('=>  compiled ' + fullOutputPath))
 }
 
-// Create the full directory tree for a file path
-const createDirs =
-  R.compose(
-    R.map(dir => fs.mkdirSync(dir)) // create all missing directory levels
-  , R.filter(dir => !fs.existsSync(dir)) // filter out only dirs that do not exist
-  , R.dropLast(1) // we don't want the path with the filename at the end (last element in the scan)
-  , R.drop(1) // we don't want the first empty string
-  , R.map(R.join('/')) // Array of directory levels ['', 'css', 'css/nonprofits', 'css/nonprofits/recurring_donations.css']
-  , R.scan((arr, p) => R.append(p, arr), []) // an array of arrays of directory levels [[], ['css'], ['css', 'nonprofits'], ['css', 'nonprofits', 'recurring_donations.css']]
-  , R.split('/')
-  )
+// Create the full directory tree for all filePaths
+function createDirsForOutputFile(dir_to_create)
+{
+    if (fs.existsSync(dir_to_create)){
+      log(chalk.gray(dir_to_create + " already exists"))
+    }
+    else  {
+      mkdirp.sync(dir_to_create)
+      log(chalk.gray(dir_to_create + " created"))
+    }
+}
 
 module.exports = init
