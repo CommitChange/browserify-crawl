@@ -1,4 +1,7 @@
+# Deprecated: we use webpack now
+
 # browserify-crawl
+
 
 This library is our "ideal build script" wrapped up into a module. It supports all of the following:
 * Crawls a tree of directories, finds all your main-files
